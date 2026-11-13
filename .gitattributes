@@ -1,2 +1,309 @@
 # Auto detect text files and perform LF normalization
 * text=auto
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>校园失物招领</title>
+  <style>
+    * {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+      font-family: system-ui, sans-serif;
+    }
+    body {
+      max-width: 900px;
+      margin: 2rem auto;
+      padding: 0 1rem;
+      background-color: #f4f7fa;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 24px;
+      color: #222;
+    }
+    .card {
+      background: #fff;
+      border-radius: 12px;
+      padding: 20px;
+      margin-bottom: 20px;
+      box-shadow: 0 2px 10px rgba(0,0,0,0.08);
+    }
+    .form-item {
+      margin-bottom: 14px;
+    }
+    label {
+      display: block;
+      margin-bottom: 6px;
+      font-weight: 500;
+    }
+    input, textarea {
+      width: 100%;
+      padding: 10px 12px;
+      border: 1px solid #d8dee6;
+      border-radius: 8px;
+      font-size: 15px;
+    }
+    button {
+      padding: 10px 18px;
+      border: none;
+      border-radius: 8px;
+      cursor: pointer;
+      background: #4080ff;
+      color: white;
+      font-size: 15px;
+    }
+    button:hover {
+      background: #2b6ed9;
+    }
+    .search-bar {
+      display: flex;
+      gap: 10px;
+    }
+    .lost-item {
+      border: 1px solid #e8edf3;
+      border-radius: 10px;
+      padding: 16px;
+      margin-top: 14px;
+    }
+    .lost-item h3 {
+      margin-bottom: 8px;
+    }
+    .tip {
+      margin-top: 10px;
+      color: #666;
+    }
+    .img-preview {
+      max-width: 220px;
+      max-height: 220px;
+      margin-top: 10px;
+      border-radius: 8px;
+    }
+    .toast {
+      position: fixed;
+      bottom: 30px;
+      left: 50%;
+      transform: translateX(-50%);
+      background: #222;
+      color: white;
+      padding: 12px 24px;
+      border-radius: 8px;
+      display: none;
+      z-index: 999;
+    }
+  </style>
+</head>
+<body>
+  <h1>校园失物招领系统</h1>
+
+  <!-- 发布表单 -->
+  <div class="card">
+    <h3>📝 发布失物信息</h3>
+    <div class="form-item">
+      <label>物品名称（必填）</label>
+      <input id="title" placeholder="例如：黑色保温杯" />
+    </div>
+    <div class="form-item">
+      <label>丢失地点（必填）</label>
+      <input id="location" placeholder="例如：图书馆三楼" />
+    </div>
+    <div class="form-item">
+      <label>丢失时间（选填）</label>
+      <input id="lostTime" type="datetime-local" />
+    </div>
+    <div class="form-item">
+      <label>联系方式（必填）</label>
+      <input id="contact" placeholder="手机号/QQ号" />
+    </div>
+    <div class="form-item">
+      <label>上传图片（可选，≤500KB）</label>
+      <input type="file" id="imgUpload" accept="image/*" />
+      <!-- ✅ 加透明占位 src + alt，初始隐藏 -->
+      <img id="preview" class="img-preview" style="display:none"
+           src="data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII="
+           alt="图片预览">
+    </div>
+    <button id="submitBtn">发布</button>
+  </div>
+
+  <!-- 搜索 -->
+  <div class="card">
+    <h3>🔍 搜索失物</h3>
+    <div class="search-bar">
+      <input id="searchInput" placeholder="输入物品名称 / 地点搜索">
+      <button id="searchBtn">搜索</button>
+    </div>
+  </div>
+
+  <!-- 列表区域 -->
+  <div class="card">
+    <h3>📋 失物列表</h3>
+    <div id="listWrap"></div>
+  </div>
+
+  <!-- 提示弹窗 -->
+  <div class="toast" id="toast"></div>
+
+<script>
+  const STORAGE_KEY = "lost_list";
+  const toastDom = document.getElementById("toast");
+  const previewDom = document.getElementById("preview");
+  // 透明占位图
+  const EMPTY_SRC = "data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=";
+  let imgBase64 = "";
+
+  // ===== 工具函数 =====
+  // XSS：HTML转义
+  function escapeHtml(str) {
+    return String(str)
+      .replaceAll("&", "&amp;")
+      .replaceAll("<", "&lt;")
+      .replaceAll(">", "&gt;")
+      .replaceAll('"', "&quot;")
+      .replaceAll("'", "&#039;");
+  }
+
+  // 手机号脱敏 138****1234
+  function maskPhone(phone) {
+    const s = String(phone);
+    if (s.length < 7) return s;
+    return s.slice(0,3) + "****" + s.slice(-4);
+  }
+
+  // 生成唯一 id
+  function genId() {
+    return Date.now() + "_" + Math.floor(Math.random() * 10000);
+  }
+
+  // 读取本地存储
+  function loadList() {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    return raw ? JSON.parse(raw) : [];
+  }
+
+  // 保存到本地存储
+  function saveList(arr) {
+    localStorage.setItem(STORAGE_KEY, JSON.stringify(arr));
+  }
+
+  // 弹出提示
+  function showToast(msg) {
+    toastDom.innerText = msg;
+    toastDom.style.display = "block";
+    setTimeout(()=> toastDom.style.display = "none", 2200);
+  }
+
+  // 渲染列表
+  function renderList(filterKey = "") {
+    let arr = loadList();
+    // 按创建时间倒序
+    arr.sort((a,b) => b.createdAt - a.createdAt);
+
+    // 搜索过滤
+    if(filterKey.trim() !== "") {
+      const kw = filterKey.trim().toLowerCase();
+      arr = arr.filter(item =>
+        item.title.toLowerCase().includes(kw) ||
+        item.location.toLowerCase().includes(kw)
+      );
+    }
+
+    const wrap = document.getElementById("listWrap");
+    if(arr.length === 0) {
+      wrap.innerHTML = `<div class="tip">没有找到相关失物信息。</div>`;
+      return;
+    }
+
+    let html = "";
+    arr.forEach(item => {
+      html += `
+        <div class="lost-item">
+          <h3>${escapeHtml(item.title)}</h3>
+          <p>📍地点：${escapeHtml(item.location)}</p>
+          <p>⏰丢失时间：${escapeHtml(item.time || "未填写")}</p>
+          <p>📞联系方式：<span class="mask">${maskPhone(item.contact)}</span>
+            <button onclick="alert('完整联系方式：${escapeHtml(item.contact)}')">查看完整号码</button>
+          </p>
+          <p>🗓发布时间：${new Date(item.createdAt).toLocaleString()}</p>
+          ${item.img ? `<img src="${item.img}" class="img-preview" alt="失物照片">` : ""}
+        </div>
+      `;
+    })
+    wrap.innerHTML = html;
+  }
+
+  // ===== 图片上传转 base64，限制 500KB =====
+  document.getElementById("imgUpload").onchange = function(e) {
+    const file = e.target.files[0];
+    if(!file) return;
+    const maxSize = 500 * 1024;
+    if(file.size > maxSize) {
+      showToast("图片不能超过 500KB！");
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = function(ev) {
+      imgBase64 = ev.target.result;
+      previewDom.src = imgBase64;
+      previewDom.style.display = "block";
+    }
+    reader.readAsDataURL(file);
+  }
+
+  // ===== 提交发布 =====
+  document.getElementById("submitBtn").onclick = function() {
+    const title = document.getElementById("title").value.trim();
+    const location = document.getElementById("location").value.trim();
+    const lostTime = document.getElementById("lostTime").value.trim();
+    const contact = document.getElementById("contact").value.trim();
+
+    // 必填校验
+    if(!title || !location || !contact) {
+      alert("请填写物品名称和丢失地点！");
+      return;
+    }
+
+    const arr = loadList();
+    arr.push({
+      id: genId(),
+      title,
+      location,
+      time: lostTime,
+      contact,
+      status: "待认领",
+      createdAt: Date.now(),
+      img: imgBase64
+    })
+    saveList(arr);
+
+    // 清空表单，重置图片到占位图并隐藏
+    document.getElementById("title").value = "";
+    document.getElementById("location").value = "";
+    document.getElementById("lostTime").value = "";
+    document.getElementById("contact").value = "";
+    document.getElementById("imgUpload").value = "";
+    previewDom.src = EMPTY_SRC;
+    previewDom.style.display = "none";
+    imgBase64 = "";
+
+    showToast("发布成功！");
+    renderList();
+  }
+
+  // ===== 搜索 =====
+  document.getElementById("searchBtn").onclick = function() {
+    const kw = document.getElementById("searchInput").value;
+    renderList(kw);
+  }
+  // 回车搜索
+  document.getElementById("searchInput").onkeydown = function(e) {
+    if(e.key === "Enter") renderList(this.value);
+  }
+
+  // 页面初始化渲染
+  window.onload = () => renderList();
+</script>
+</body>
+</html>
